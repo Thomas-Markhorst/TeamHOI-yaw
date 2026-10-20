@@ -4,3 +4,7 @@ wandb/
 *.pyc
 isaac-gym-preview-*
 isaacgym/
+__pycache__/
+.pytest_cache/
+artifacts/
+*.pth

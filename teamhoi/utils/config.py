@@ -142,7 +142,7 @@ def load_cfg(args):
     cfg_train["params"]["load_checkpoint"] = False
 
     if args.checkpoint == "Base":
-        ckpt_path = os.path.join('output', exp_name, 'ckpt.pth')
+        ckpt_path = os.path.join(args.output_path, exp_name, 'ckpt.pth')
 
         if os.path.exists(ckpt_path):
             cfg_train["params"]["load_checkpoint"] = True
@@ -151,6 +151,17 @@ def load_cfg(args):
     if args.checkpoint != "Base":
         cfg_train["params"]["load_checkpoint"] = True
         cfg_train["params"]["load_path"] = args.checkpoint
+
+    if args.init_from_checkpoint:
+        if args.test or args.play or args.checkpoint != "Base" or args.resume:
+            raise ValueError('--init_from_checkpoint is for new training, not --test/--play/--checkpoint/--resume')
+        ckpt_path = os.path.join(args.output_path, exp_name, 'ckpt.pth')
+        if os.path.exists(ckpt_path):
+            raise ValueError('Experiment already has a checkpoint; use a new --exp_name or resume it')
+        if not cfg_train['params']['config'].get('yaw', {}).get('enabled', False):
+            raise ValueError('--init_from_checkpoint requires cfg/teamhoi_yaw.yaml')
+        cfg_train['params']['load_checkpoint'] = False
+        cfg_train['params']['config']['init_from_checkpoint'] = args.init_from_checkpoint
 
     if args.llc_checkpoint != "":
         cfg_train["params"]["config"]["llc_checkpoint"] = args.llc_checkpoint
@@ -242,6 +253,12 @@ def get_args(benchmark=False):
         {"name": "--llc_checkpoint", "type": str, "default": "",
             "help": "Path to the saved weights for the low-level controller of an HRL agent."},
         
+        {"name": "--init_from_checkpoint", "type": str, "default": "",
+         "help": "Initialize a NEW yaw experiment from original TeamHOI weights; fresh optimizer"},
+        {"name": "--yaw_eval_episodes", "type": int, "default": 0,
+         "help": "Run this many completed yaw evaluation episodes with --test"},
+        {"name": "--yaw_eval_output", "type": str, "default": "output/yaw_evaluation.json",
+         "help": "JSON destination for bounded yaw evaluation"},
         # Used toggles for TeamHOI
         {"name": "--checkpoint", "type": str, "default": "Base",
             "help": "Path to the saved weights, only for rl_games RL library"},
@@ -301,4 +318,6 @@ def get_args(benchmark=False):
     else:
         args.train = True
 
+    if args.yaw_eval_episodes < 0 or (args.yaw_eval_episodes and not args.play):
+        raise ValueError('--yaw_eval_episodes requires --test or --play and a positive count')
     return args

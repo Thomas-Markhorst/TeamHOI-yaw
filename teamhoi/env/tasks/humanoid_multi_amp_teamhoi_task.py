@@ -13,6 +13,9 @@ import torch.nn.functional as F
 import pandas as pd
 from env.tasks.reward_functions import *
 from utils.task_util import *
+from utils.yaw import (YAW_EXTRA_DIM, yaw_settings, quaternion_yaw, yaw_quaternion,
+                       wrap_angle, yaw_features, update_yaw_phase, rotation_reward,
+                       placement_metrics)
 
 
 class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
@@ -28,6 +31,9 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
         with open(train_cfg_path, "r") as f:
             train_cfg = yaml.safe_load(f)
         
+        self.yaw_config = yaw_settings(train_cfg['params']['config'].get('yaw', {}))
+        self.yaw_enabled = self.yaw_config['enabled']
+        goal_dim = 3 + (YAW_EXTRA_DIM if self.yaw_enabled else 0)
         self.dist_threshold = float(train_cfg['params']['config'].get("dist_threshold", 10000.0))
         self._target_dist_min = 3 
         self._target_dist_max = 10
@@ -61,12 +67,12 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
             3, # obj_root
             self.num_held_points * 3,
             6, # nn_pts
-            3 # goal
+            goal_dim # position plus optional yaw and arrival inputs
         ]
         self.task_obs_dim = [3,
                             self.num_held_points * 3,
                             6,
-                            3, # goal
+                            goal_dim, # goal
                             cfg['env_max_humanoids'] * (3+6) # relative angles and pos
                              ]
         
@@ -343,6 +349,8 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
 
         self.obj_held_points = torch.zeros(self.num_envs, self.K_RIM, 3).to(self.device)
         self.putdown_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.arrived_mask = torch.zeros_like(self.putdown_mask)
+        self.settled_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
         if self.log_metrics == True:
             self.steps = torch.zeros(self.num_envs, dtype=torch.int32, device=self.device)
@@ -413,6 +421,13 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
         self._obj_states[env_ids, 2] = self.obj_height + 0.03
         self._obj_states[env_ids, 3:7] = torch.tensor([.0, 0.0, 0.0, 1.0], dtype=self._obj_states.dtype, device=self._obj_states.device)
         self._obj_states[env_ids, 7:] = 0.0
+        if self.yaw_enabled:
+            initial_range = np.deg2rad(self.yaw_config['initial_yaw_range_deg'])
+            offset_range = np.deg2rad(self.yaw_config['target_offset_range_deg'])
+            initial_yaw = (2 * torch.rand(n, device=self.device) - 1) * initial_range
+            offset = (2 * torch.rand(n, device=self.device) - 1) * offset_range
+            self._obj_states[env_ids, 3:7] = yaw_quaternion(initial_yaw)
+            self._target_rot[env_ids] = yaw_quaternion(initial_yaw + offset)
 
         return
 
@@ -439,6 +454,8 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
         self._target_end_pos[env_ids, 2] = self.target_height
 
         self.putdown_mask[env_ids] = False
+        self.arrived_mask[env_ids] = False
+        self.settled_count[env_ids] = 0
         
         return
     
@@ -483,10 +500,9 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
 
     def _compute_task_obs_tensor(self, env_ids=None):
 
-        if env_ids is None or len(env_ids) == self.num_envs:
-            root_states = self._humanoid_root_states_tensor
-        else:
-            root_states = self._humanoid_root_states_tensor[env_ids]
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.device)
+        root_states = self._humanoid_root_states_tensor[env_ids]
 
         num_envs, num_agents, _ = root_states.shape
         root_states = root_states.reshape(-1, root_states.shape[2])
@@ -529,11 +545,20 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
         delta_xy = self._target_end_pos[env_ids][...,:2] - self._obj_states[env_ids][..., :2]
         d = delta_xy.norm(dim=-1)
 
-        near = d < 0.03
-        self.putdown_mask[env_ids] |= near     # in-place OR
+        if self.yaw_enabled:
+            error = wrap_angle(quaternion_yaw(self._target_rot[env_ids]) -
+                               quaternion_yaw(self._obj_states[env_ids, 3:7]))
+            arrived, putdown = update_yaw_phase(
+                self.arrived_mask[env_ids], self.putdown_mask[env_ids], d,
+                error, self._obj_states[env_ids, 12], self.yaw_config)
+            self.arrived_mask[env_ids] = arrived
+            self.putdown_mask[env_ids] = putdown
+        else:
+            self.putdown_mask[env_ids] |= d < 0.03
 
-        idx = env_ids[self.putdown_mask[env_ids]]
-        tar_pos[idx, 2] = 0.78
+        # tar_pos is a subset: use a subset mask, not global environment indices.
+        tar_pos = tar_pos.clone()
+        tar_pos[self.putdown_mask[env_ids], 2] = 0.78
 
         tar_pos = tar_pos.unsqueeze(1).expand(-1, num_agents, -1)
         tar_pos = tar_pos.reshape(-1, tar_pos.shape[2])
@@ -541,6 +566,13 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
         hand_z = hand_states[:,:,2].max(dim=-1)[0]
 
         obs = compute_obs(root_states, obj_pos, obj_held_pts, obs_vec6, tar_pos, hand_z, self.putdown_mask[env_ids], num_humanoids = self.num_agents)
+        if self.yaw_enabled:
+            extra = yaw_features(error, self._obj_states[env_ids, 12],
+                                 self.arrived_mask[env_ids], self.yaw_config['angular_speed_scale'])
+            extra = extra[:, None, :].expand(-1, num_agents, -1).reshape(-1, YAW_EXTRA_DIM)
+            # Insert before teammate observations so existing object features stay fixed.
+            split = sum(self.task_obs_dim[:-1]) - YAW_EXTRA_DIM
+            obs = torch.cat((obs[:, :split], extra, obs[:, split:]), dim=-1)
 
         if self.viz == True:
             if self.t < self.T:
@@ -684,6 +716,26 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
         total_reward = w[0] * r_pos + w[1] * r_vel + w[2] * (r_face * r_ang)**0.5 + \
         w[3] * r_form + w[4] * (r_hand * r_cov) + w[5] * r_contact + w[6] * (r_lift * r_cov) + \
         w[7] * r_transport + w[8] * r_align + w[9] * r_putdown
+
+        if self.yaw_enabled:
+            distance = (obj_center[:, :2] - target_pos[:, :2]).norm(dim=-1)
+            error = wrap_angle(quaternion_yaw(self._target_rot) - quaternion_yaw(obj_rot))
+            r_yaw = rotation_reward(error, self._obj_states[:, 12], distance,
+                                    self.arrived_mask, self.putdown_mask, move_mask,
+                                    self.yaw_config)
+            total_reward = total_reward + r_yaw.repeat_interleave(n_agents)
+            distance, error, released, self.settled_count, success = placement_metrics(
+                self._obj_states, target_pos, self._target_rot,
+                hands_dist.view(n_envs, n_agents, 2), self.mask, self.putdown_mask,
+                self.settled_count, self.yaw_config, rest_height=self.obj_height)
+            # Snapshot values: reset of a subset must not overwrite terminal metrics.
+            self.extras['yaw_metrics'] = {
+                'position_error': distance.clone(), 'yaw_error': error.abs().clone(),
+                'angular_speed': self._obj_states[:, 12].abs().clone(),
+                'arrived': self.arrived_mask.clone(), 'putdown': self.putdown_mask.clone(),
+                'released': released.clone(), 'settled_success': success.clone(),
+                'rotation_reward': r_yaw.clone(),
+            }
 
         self.rew_buf = total_reward.view(n_envs, n_agents)
 

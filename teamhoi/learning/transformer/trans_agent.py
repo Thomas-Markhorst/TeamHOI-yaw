@@ -21,6 +21,8 @@ from utils import torch_utils
 
 import wandb
 import math
+from utils.yaw_checkpoint import initialize_from_checkpoint
+from utils.yaw_reference import build_reference, reference_loss
 
 
 class TransAgent(common_agent.CommonAgent):
@@ -121,10 +123,16 @@ class TransAgent(common_agent.CommonAgent):
         if self._normalize_amp_input:
             state['amp_input_mean_std'] = self._amp_input_mean_std.state_dict()
             state['amp_masked_input_mean_std'] = self._amp_masked_input_mean_std.state_dict()
+        if getattr(self, '_yaw_reference', None) is not None:
+            state['yaw_reference'] = {
+                'model': self._yaw_reference.state_dict(),
+                'normalization': self._yaw_reference_norm.state_dict(),
+            }
         return state
 
     def set_stats_weights(self, weights):
         super().set_stats_weights(weights)
+        self._yaw_saved_reference = weights.get('yaw_reference')
         if self._normalize_amp_input:
             self._amp_input_mean_std.load_state_dict(weights['amp_input_mean_std'])
             self._amp_masked_input_mean_std.load_state_dict(weights['amp_masked_input_mean_std'])
@@ -260,6 +268,17 @@ class TransAgent(common_agent.CommonAgent):
             "Rewards/amp_rewards": torch.mean(amp_rewards['disc_rewards'][mask]),
             "Rewards/all_rewards": torch.mean(mb_rewards_normalized[mask]),
             "epoch": self.epoch})
+        if 'yaw_metrics' in infos:
+            metrics = infos['yaw_metrics']
+            arrived = metrics['arrived']
+            denominator = arrived.sum().clamp_min(1)
+            wandb.log({
+                'Yaw/arrived_fraction': arrived.float().mean(),
+                'Yaw/error_deg_after_arrival': (metrics['yaw_error'] * arrived).sum() / denominator * (180.0 / math.pi),
+                'Yaw/rotation_reward': metrics['rotation_reward'].mean(),
+                'Yaw/settled_fraction': metrics['settled_success'].float().mean(),
+                'epoch': self.epoch,
+            })
 
 
         mb_advs = self.discount_values(mb_fdones, mb_values, mb_rewards, mb_next_values)
@@ -618,6 +637,10 @@ class TransAgent(common_agent.CommonAgent):
 
             loss = a_loss + self.critic_coef * c_loss - self.entropy_coef * entropy + self.bounds_loss_coef * b_loss \
                  + self._disc_coef * disc_loss + self._disc_coef * disc_loss_masked
+            if getattr(self, '_yaw_reference', None) is not None:
+                preserve = reference_loss(self, reshaper(input_dict['obs']), mask_obs,
+                                          mask_others, mu)
+                loss = loss + self._yaw_reference_coef * preserve
             
             a_info['actor_loss'] = a_loss
             a_info['actor_clip_frac'] = a_clip_frac
@@ -727,6 +750,16 @@ class TransAgent(common_agent.CommonAgent):
 
     def _init_train(self):
         super()._init_train()
+        init_path = self.config.get('init_from_checkpoint', '')
+        yaw_task = self.vec_env.env.task.yaw_enabled
+        if init_path:
+            initialize_from_checkpoint(self, init_path)
+        self._yaw_reference_coef = self.vec_env.env.task.yaw_config['reference_loss_coef']
+        if yaw_task and self._yaw_reference_coef > 0:
+            saved = getattr(self, '_yaw_saved_reference', None)
+            if not init_path and saved is None:
+                raise ValueError('Yaw training needs --init_from_checkpoint or a yaw checkpoint with its reference actor')
+            build_reference(self, saved)
         self._init_amp_demo_buf()
         return
     

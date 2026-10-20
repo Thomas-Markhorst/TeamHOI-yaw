@@ -1,3 +1,12 @@
+# TeamHOI yaw fine-tuning
+
+This fork adds exact table-heading goals and rotation after arrival, before putdown.
+See [the fine-tuning guide](docs/YAW_FINETUNING.md) for checkpoint initialization,
+CPU validation, and DGX01 training/evaluation commands. The yaw policy has not yet
+been trained or validated in simulation. Upstream TeamHOI documentation follows.
+
+---
+
 <br>
 <p align="center">
 <h2 align="center">

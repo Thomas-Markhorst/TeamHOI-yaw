@@ -50,12 +50,19 @@ class TransPlayerContinuous(common_player.CommonPlayer):
         self.self_obs_size = sum(self.env.task.self_obs_dim)
         return
 
+    def run(self):
+        args = self.env.task.cfg['args']
+        if args.yaw_eval_episodes:
+            from utils.yaw_evaluation import evaluate_player
+            return evaluate_player(self, args.yaw_eval_episodes, args.yaw_eval_output)
+        return super().run()
+
     def restore(self, fn):
         checkpoint = torch_ext.load_checkpoint(fn)
         self.model.load_state_dict(checkpoint['model'])
         self.running_mean_std.load_state_dict(checkpoint['running_mean_std'])
         self._amp_input_mean_std.load_state_dict(checkpoint['amp_input_mean_std'])
-        self._amp_masked_input_mean_std.load_state_dict(checkpoint['amp_input_mean_std'])
+        self._amp_masked_input_mean_std.load_state_dict(checkpoint['amp_masked_input_mean_std'])
 
         return
     
