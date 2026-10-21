@@ -1,0 +1,21 @@
+services:
+  teamhoi-yaw:
+    image: teamhoi-yaw:latest
+    container_name: teamhoi-yaw-container
+    working_dir: /workspace/TeamHOI-yaw
+    command: ["sleep", "infinity"]
+    shm_size: "10gb"
+    stdin_open: true
+    tty: true
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,graphics
+    volumes:
+      - /fs01/tud/tcmarkhorst/projects/TeamHOI-yaw:/workspace/TeamHOI-yaw
+      - /projB/tud/tcmarkhorst/data:/workspace/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

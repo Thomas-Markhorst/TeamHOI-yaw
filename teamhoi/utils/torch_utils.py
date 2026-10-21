@@ -215,7 +215,7 @@ def sample_polar_no_collision_batch(B, N, R, R_max, d_min, max_trials=100, overs
         dist_sq[:, eye_mask] = float('inf')  # ignore self-pairs
 
         # Check validity
-        is_valid = (dist_sq >= d_min ** 2).all(dim=(1, 2))  # (total,)
+        is_valid = (dist_sq >= d_min ** 2).flatten(1).all(dim=1)  # (total,)
         valid_points = points[is_valid]  # (valid_count, N, 2)
 
         if valid_points.shape[0] >= B:
