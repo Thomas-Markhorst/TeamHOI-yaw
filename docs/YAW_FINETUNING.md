@@ -15,11 +15,32 @@ The 3-value goal input becomes 7 values:
 
 Exact heading is modulo 360 degrees: 180 degrees is an error even for a symmetric table. Object geometry and agent-relative observations remain available to interpret the common turning objective.
 
-Arrival uses the original 3 cm condition. It latches until reset. Only then is the shared rotation reward active, provided the existing all-active-agents carrying-contact condition holds. A small translation during rotation does not return to the transport stage. The putdown latch additionally requires current position within 3 cm, yaw error below 5 degrees, and table angular speed below 0.1 rad/s. There is no separate phase token: the arrival bit and the existing lowering cue describe the stage.
+Arrival uses the original 3 cm condition. It latches until reset. Only then is the shared pose reward active. Before putdown, the existing all-active-agents carrying-contact condition is required; once putdown begins, the pose reward remains active through lowering and release without requiring hand support. A small translation during rotation does not return to the transport stage. The putdown latch additionally requires current position within 3 cm, yaw error below 5 degrees, and table angular speed below 0.1 rad/s. There is no separate phase token: the arrival bit and the existing lowering cue describe the stage.
 
-The added reward combines linear yaw accuracy, angular-speed damping that increases near the desired yaw, and local position accuracy. Existing support rewards remain active until putdown. The original putdown reward is then used unchanged; rotation reward stops. Final-placement evaluation still checks position, yaw, release, and consecutive settling, so the historical latch does not establish success. This first version does not implement recovery after putdown starts.
+The added reward combines linear yaw accuracy, angular-speed damping that increases near the desired yaw, and local position accuracy. Existing support rewards remain active until putdown. The original putdown rewards remain unchanged. The yaw, position, and angular-speed reward formula and every weight are also unchanged, but their activation is now `arrived & (supported | putdown)`: the same pose earns the same pose reward across carrying, lowering, and release. This removes the reward discontinuity that could encourage delaying putdown to retain the pose reward. Final-placement evaluation still checks position, yaw, release, and consecutive settling, so the historical latch does not establish success. This first version does not implement recovery after putdown starts.
 
 Initial yaw is sampled independently within +/-5 degrees. Target offset relative to that initial yaw is sampled within +/-30 degrees. Broaden the ranges in the config as learning improves; no automatic curriculum is claimed. Humanoids keep the original distant initialization.
+
+## Reward source and running experiments
+
+The DGX run `full-10000-01` was launched before this reward activation fix.
+Its training task imports `utils.yaw.rotation_reward` normally, and the current
+launcher has no code reload or automatic trainer restart. That already-running
+process retains the old imported function (`arrived & ~putdown & supported`);
+editing this source does not change its reward midway through training.
+New or restarted Python processes load the edited function, including a later
+resume from one of this run's checkpoints. Such a resume changes the training
+objective and should use a distinct experiment name/output directory and record
+the source revision/diff and starting checkpoint for comparison.
+
+The pre-edit reward source, tests, documentation, DGX compatibility change,
+Git revision/diff, active process identity, and run configuration hashes are
+preserved separately in
+`/workspace/data/teamhoi-yaw/reward-putdown-fix-01/` (host path:
+`/projB/tud/tcmarkhorst/data/teamhoi-yaw/reward-putdown-fix-01/`).
+The active run's configuration, checkpoints, outputs, and process are not changed
+by this source edit. Initial/target yaw sampling, observations, phase gates,
+success metrics, and original putdown rewards are unchanged.
 
 ## Initializing a NEW experiment (DGX01)
 

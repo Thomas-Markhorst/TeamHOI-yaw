@@ -63,14 +63,17 @@ def update_yaw_phase(arrived, putdown, distance, error, angular_speed, config):
 
 
 def rotation_reward(error, angular_speed, distance, arrived, putdown, supported, config):
-    """Team reward; no yaw objective during transport or after putdown begins."""
+    """Team pose reward after arrival, continuing through putdown and release.
+
+    Hand support is required before putdown, but not once putdown has begun.
+    """
     accuracy = 1.0 - wrap_angle(error).abs() / math.pi
     near_yaw = torch.exp(-(error / math.radians(config["braking_width_deg"])) ** 2)
     braking = near_yaw * (angular_speed / config["angular_speed_scale"]) ** 2
     position = torch.exp(-(distance / config["position_width"]) ** 2)
     reward = (config["accuracy_weight"] * accuracy - config["braking_weight"] * braking
               + config["position_weight"] * position)
-    return torch.where(arrived & ~putdown & supported, reward, torch.zeros_like(reward))
+    return torch.where(arrived & (supported | putdown), reward, torch.zeros_like(reward))
 
 
 def placement_metrics(obj_states, target_pos, target_rot, hands_dist, active, putdown,

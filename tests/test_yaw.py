@@ -69,11 +69,30 @@ class YawTaskTests(unittest.TestCase):
             return rotation_reward(torch.tensor([error]), torch.tensor([speed]), torch.tensor([.02]),
                                    torch.tensor([arrived]), torch.tensor([put]), torch.tensor([support]), self.cfg).item()
         self.assertEqual(reward(1., arrived=False), 0.)
-        self.assertEqual(reward(1., put=True), 0.)
+        self.assertEqual(reward(1., put=True), reward(1.))
         self.assertEqual(reward(1., support=False), 0.)
         self.assertGreater(reward(.1), reward(.5))
         self.assertLess(reward(.1, .5), reward(.1, 0.))
         self.assertGreater(reward(.1)-reward(.1, .5), reward(1.)-reward(1., .5))
+
+    def test_reward_continues_through_putdown_and_release(self):
+        def reward(error=.1, speed=0., distance=.02, arrived=True, put=False, support=True):
+            return rotation_reward(torch.tensor([error]), torch.tensor([speed]),
+                                   torch.tensor([distance]), torch.tensor([arrived]),
+                                   torch.tensor([put]), torch.tensor([support]), self.cfg).item()
+
+        carrying = reward()
+        self.assertGreater(carrying, 0.)
+        self.assertEqual(reward(put=True), carrying)
+        self.assertEqual(reward(put=True, support=False), carrying)
+        for put in (False, True):
+            for support in (False, True):
+                with self.subTest(putdown=put, supported=support):
+                    self.assertEqual(reward(arrived=False, put=put, support=support), 0.)
+        self.assertEqual(reward(support=False), 0.)
+        self.assertLess(reward(error=.5, put=True, support=False), carrying)
+        self.assertLess(reward(distance=.2, put=True, support=False), carrying)
+        self.assertLess(reward(speed=.5, put=True, support=False), carrying)
 
     def test_settled_success_is_not_historical(self):
         state = torch.zeros(1, 13); state[:, 6] = 1; state[:, 2] = .82
