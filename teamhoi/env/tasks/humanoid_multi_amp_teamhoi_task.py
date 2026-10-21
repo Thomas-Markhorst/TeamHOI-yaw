@@ -13,6 +13,7 @@ import torch.nn.functional as F
 import pandas as pd
 from env.tasks.reward_functions import *
 from utils.task_util import *
+from utils.polygon import sample_rim, asset_ranges
 from utils.yaw import (YAW_EXTRA_DIM, yaw_settings, quaternion_yaw, yaw_quaternion,
                        wrap_angle, yaw_features, update_yaw_phase, rotation_reward,
                        placement_metrics)
@@ -52,7 +53,8 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
             self.asset_cfgs.append(asset_cfg)
             self.assets.append(asset_cfg["asset"])
 
-        self.ranges = divide_envs(self.num_envs, len(self.assets))
+        self.ranges = asset_ranges(self.num_envs, len(self.assets),
+                                   train_cfg['params']['config'].get('asset_weights'))
         self.rim_points_list = []
         self.obj_spans = []
 
@@ -183,6 +185,12 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
                 ], dim=1)
 
                 span_xy = [r, r]
+
+            elif typ == "polygon":
+                points = sample_rim(asset_cfg["rim_vertices"], self.K_RIM, asset_cfg["z_local"])
+                pts_local = torch.tensor(points, dtype=torch.float32, device=device)
+                # Match CarryForge's existing span convention; formation is unchanged.
+                span_xy = [max(abs(p[i]) for p in points) for i in (0, 1)]
 
             else:
                 raise ValueError(f"Unknown asset type: {typ}")

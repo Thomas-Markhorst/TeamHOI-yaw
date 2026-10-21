@@ -254,7 +254,7 @@ def get_args(benchmark=False):
             "help": "Path to the saved weights for the low-level controller of an HRL agent."},
         
         {"name": "--init_from_checkpoint", "type": str, "default": "",
-         "help": "Initialize a NEW yaw experiment from original TeamHOI weights; fresh optimizer"},
+         "help": "Initialize a NEW yaw experiment from original or yaw-aware weights; fresh optimizer"},
         {"name": "--yaw_eval_episodes", "type": int, "default": 0,
          "help": "Run this many completed yaw evaluation episodes with --test"},
         {"name": "--yaw_eval_output", "type": str, "default": "output/yaw_evaluation.json",

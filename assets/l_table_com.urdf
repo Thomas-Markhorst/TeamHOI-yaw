@@ -1,0 +1,256 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<robot name="l_table_horizontal_com_origin">
+
+  <link name="tabletop">
+    <inertial>
+      <origin xyz="-0.00902359882005896 -0.00902359882005896 0" />
+      <mass value="61.44" />
+      <inertia ixx="19.220992" ixy="8.64" ixz="0" iyy="19.220992" iyz="0" izz="38.4256" />
+    </inertial>
+    <visual>
+      <origin xyz="0.215976401179941 -0.384023598820059 0" />
+      <geometry>
+        <box size="2.0 0.8 0.04" />
+      </geometry>
+      <material name="wood">
+        <color rgba="0.6 0.4 0.2 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.215976401179941 -0.384023598820059 0" />
+      <geometry>
+        <box size="2.0 0.8 0.04" />
+      </geometry>
+    </collision>
+    <visual>
+      <origin xyz="-0.384023598820059 0.615976401179941 0" />
+      <geometry>
+        <box size="0.8 1.2 0.04" />
+      </geometry>
+      <material name="wood">
+        <color rgba="0.6 0.4 0.2 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="-0.384023598820059 0.615976401179941 0" />
+      <geometry>
+        <box size="0.8 1.2 0.04" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="leg1">
+
+
+    <inertial>
+
+
+      <origin xyz="0 0 0" />
+
+
+      <mass value="0.7296" />
+
+
+      <inertia ixx="0.03521536" ixy="0" ixz="0" iyy="0.03521536" iyz="0" izz="0.00019456" />
+
+
+    </inertial>
+
+
+    <visual>
+      <origin xyz="0 0 0" />
+      <geometry>
+        <box size="0.04 0.04 0.82" />
+      </geometry>
+    </visual>
+
+
+    <collision>
+      <origin xyz="0 0 0" />
+      <geometry>
+        <box size="0.04 0.04 0.82" />
+      </geometry>
+    </collision>
+
+
+  </link>
+
+
+
+  <joint name="table_leg1" type="fixed">
+    <parent link="tabletop" />
+    <child link="leg1" />
+    <origin xyz="-0.664023598820059 -0.664023598820059 -0.43" rpy="0 0 0" />
+  </joint>
+  <link name="leg2">
+
+
+    <inertial>
+
+
+      <origin xyz="0 0 0" />
+
+
+      <mass value="0.7296" />
+
+
+      <inertia ixx="0.03521536" ixy="0" ixz="0" iyy="0.03521536" iyz="0" izz="0.00019456" />
+
+
+    </inertial>
+
+
+    <visual>
+      <origin xyz="0 0 0" />
+      <geometry>
+        <box size="0.04 0.04 0.82" />
+      </geometry>
+    </visual>
+
+
+    <collision>
+      <origin xyz="0 0 0" />
+      <geometry>
+        <box size="0.04 0.04 0.82" />
+      </geometry>
+    </collision>
+
+
+  </link>
+
+
+
+  <joint name="table_leg2" type="fixed">
+    <parent link="tabletop" />
+    <child link="leg2" />
+    <origin xyz="1.09597640117994 -0.664023598820059 -0.43" rpy="0 0 0" />
+  </joint>
+  <link name="leg3">
+
+
+    <inertial>
+
+
+      <origin xyz="0 0 0" />
+
+
+      <mass value="0.7296" />
+
+
+      <inertia ixx="0.03521536" ixy="0" ixz="0" iyy="0.03521536" iyz="0" izz="0.00019456" />
+
+
+    </inertial>
+
+
+    <visual>
+      <origin xyz="0 0 0" />
+      <geometry>
+        <box size="0.04 0.04 0.82" />
+      </geometry>
+    </visual>
+
+
+    <collision>
+      <origin xyz="0 0 0" />
+      <geometry>
+        <box size="0.04 0.04 0.82" />
+      </geometry>
+    </collision>
+
+
+  </link>
+
+
+
+  <joint name="table_leg3" type="fixed">
+    <parent link="tabletop" />
+    <child link="leg3" />
+    <origin xyz="1.09597640117994 -0.104023598820059 -0.43" rpy="0 0 0" />
+  </joint>
+  <link name="leg4">
+
+
+    <inertial>
+
+
+      <origin xyz="0 0 0" />
+
+
+      <mass value="0.7296" />
+
+
+      <inertia ixx="0.03521536" ixy="0" ixz="0" iyy="0.03521536" iyz="0" izz="0.00019456" />
+
+
+    </inertial>
+
+
+    <visual>
+      <origin xyz="0 0 0" />
+      <geometry>
+        <box size="0.04 0.04 0.82" />
+      </geometry>
+    </visual>
+
+
+    <collision>
+      <origin xyz="0 0 0" />
+      <geometry>
+        <box size="0.04 0.04 0.82" />
+      </geometry>
+    </collision>
+
+
+  </link>
+
+
+
+  <joint name="table_leg4" type="fixed">
+    <parent link="tabletop" />
+    <child link="leg4" />
+    <origin xyz="-0.104023598820059 1.09597640117994 -0.43" rpy="0 0 0" />
+  </joint>
+  <link name="leg5">
+
+
+    <inertial>
+
+
+      <origin xyz="0 0 0" />
+
+
+      <mass value="0.7296" />
+
+
+      <inertia ixx="0.03521536" ixy="0" ixz="0" iyy="0.03521536" iyz="0" izz="0.00019456" />
+
+
+    </inertial>
+
+
+    <visual>
+      <origin xyz="0 0 0" />
+      <geometry>
+        <box size="0.04 0.04 0.82" />
+      </geometry>
+    </visual>
+
+
+    <collision>
+      <origin xyz="0 0 0" />
+      <geometry>
+        <box size="0.04 0.04 0.82" />
+      </geometry>
+    </collision>
+
+
+  </link>
+
+
+
+  <joint name="table_leg5" type="fixed">
+    <parent link="tabletop" />
+    <child link="leg5" />
+    <origin xyz="-0.664023598820059 1.09597640117994 -0.43" rpy="0 0 0" />
+  </joint>
+</robot>

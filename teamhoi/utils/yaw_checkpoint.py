@@ -34,12 +34,36 @@ def expand_yaw_checkpoint(checkpoint, target_model, target_stats):
     return model, stats
 
 
+def prepare_yaw_checkpoint(checkpoint, target_model, target_stats):
+    """Initialize a new experiment from either legacy or already-yaw-aware weights."""
+    source = checkpoint["model"]
+    goal_key = "a2c_network.task_encoder.1.0.weight"
+    if source[goal_key].shape[1] == LEGACY_GOAL_DIM:
+        return expand_yaw_checkpoint(checkpoint, target_model, target_stats)
+    if set(source) != set(target_model):
+        raise ValueError("Checkpoint model keys do not match this TeamHOI architecture")
+    if source[goal_key].shape[1] != LEGACY_GOAL_DIM + YAW_EXTRA_DIM:
+        raise ValueError("Expected a 3-input or 7-input goal encoder")
+    for key, target in target_model.items():
+        if source[key].shape != target.shape:
+            raise ValueError("Unexpected checkpoint shape at " + key)
+    stats = checkpoint["running_mean_std"]
+    if set(stats) != set(target_stats):
+        raise ValueError("Checkpoint normalization keys do not match")
+    for key, target in target_stats.items():
+        if stats[key].shape != target.shape:
+            raise ValueError("Unexpected normalization shape at " + key)
+    return {key: value.clone() for key, value in source.items()}, copy.deepcopy(stats)
+
+
 def initialize_from_checkpoint(agent, path):
     if not agent.vec_env.env.task.yaw_enabled:
         raise ValueError("--init_from_checkpoint requires the yaw task configuration")
     checkpoint = torch.load(path, map_location=agent.ppo_device)
-    model, stats = expand_yaw_checkpoint(checkpoint, agent.model.state_dict(),
+    model, stats = prepare_yaw_checkpoint(checkpoint, agent.model.state_dict(),
                                          agent.running_mean_std.state_dict())
+    # New experiments build their teacher from these selected weights, not the old saved teacher.
+    agent._yaw_saved_reference = None
     agent.model.load_state_dict(model, strict=True)
     agent.running_mean_std.load_state_dict(stats)
     if "reward_mean_std" in checkpoint and agent.normalize_value:
