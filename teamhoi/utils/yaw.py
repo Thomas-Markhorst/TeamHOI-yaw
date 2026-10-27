@@ -13,7 +13,7 @@ def yaw_settings(config):
                     braking_weight=0.1, position_weight=0.25, position_width=0.1,
                     initial_yaw_range_deg=5.0, target_offset_range_deg=30.0,
                     settled_linear_speed=0.05, settled_steps=15, settled_height_tolerance=0.05,
-                    reference_loss_coef=1.0, staged_transport=False,
+                    reference_loss_coef=1.0, reward_variant="original", staged_transport=False,
                     carry_heading_weight=0.0, carry_angular_speed_weight=0.0,
                     carry_heading_scale_deg=30.0, lift_height=0.08,
                     in_place_probability=0.0, in_place_min_yaw_deg=10.0)
@@ -21,6 +21,8 @@ def yaw_settings(config):
     if unknown:
         raise ValueError("Unknown yaw settings: {}".format(sorted(unknown)))
     defaults.update(config)
+    if defaults['reward_variant'] not in ('original', 'only_error', 'only_error_drift'):
+        raise ValueError('yaw.reward_variant must be original, only_error, or only_error_drift')
     for key in ("position_tolerance", "yaw_tolerance_deg", "angular_speed_scale",
                 "braking_width_deg", "position_width", "settled_steps", "settled_height_tolerance",
                 "carry_heading_scale_deg", "lift_height"):
@@ -124,12 +126,40 @@ def rotation_reward(error, angular_speed, distance, arrived, putdown, supported,
 
     Hand support is required before putdown, but not once putdown has begun.
     """
+    variant = config.get('reward_variant', 'original')
+    if variant == 'only_error':
+        return rotation_reward_only_error(error, angular_speed, distance, arrived, putdown, supported, config)
+    if variant == 'only_error_drift':
+        return rotation_reward_only_error_drift(error, angular_speed, distance, arrived, putdown, supported, config)
+    if variant != 'original':
+        raise ValueError('Unknown yaw reward variant: {}'.format(variant))
     accuracy = 1.0 - wrap_angle(error).abs() / math.pi
     near_yaw = torch.exp(-(error / math.radians(config["braking_width_deg"])) ** 2)
     braking = near_yaw * (angular_speed / config["angular_speed_scale"]) ** 2
     position = torch.exp(-(distance / config["position_width"]) ** 2)
     reward = (config["accuracy_weight"] * accuracy - config["braking_weight"] * braking
               + config["position_weight"] * position)
+    return torch.where(arrived & (supported | putdown), reward, torch.zeros_like(reward))
+
+
+def rotation_reward_only_error(error, angular_speed, distance, arrived, putdown, supported, config):
+    """Team pose reward after arrival, continuing through putdown and release.
+
+    Hand support is required before putdown, but not once putdown has begun.
+    """
+    accuracy = 1.0 - wrap_angle(error).abs() / math.pi
+    reward = (config["accuracy_weight"] * accuracy)
+    return torch.where(arrived & (supported | putdown), reward, torch.zeros_like(reward))
+
+
+def rotation_reward_only_error_drift(error, angular_speed, distance, arrived, putdown, supported, config):
+    """Team pose reward after arrival, continuing through putdown and release.
+
+    Hand support is required before putdown, but not once putdown has begun.
+    """
+    accuracy = 1.0 - wrap_angle(error).abs() / math.pi
+    position = torch.exp(-20 * (distance) ** 2)
+    reward = (config["accuracy_weight"] * accuracy) + config["position_weight"] * position
     return torch.where(arrived & (supported | putdown), reward, torch.zeros_like(reward))
 
 
