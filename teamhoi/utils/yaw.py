@@ -13,23 +13,38 @@ def yaw_settings(config):
                     braking_weight=0.1, position_weight=0.25, position_width=0.1,
                     initial_yaw_range_deg=5.0, target_offset_range_deg=30.0,
                     settled_linear_speed=0.05, settled_steps=15, settled_height_tolerance=0.05,
-                    reference_loss_coef=1.0)
+                    reference_loss_coef=1.0, staged_transport=False,
+                    carry_heading_weight=0.0, carry_angular_speed_weight=0.0,
+                    carry_heading_scale_deg=30.0, lift_height=0.08,
+                    in_place_probability=0.0, in_place_min_yaw_deg=10.0)
     unknown = set(config) - set(defaults)
     if unknown:
         raise ValueError("Unknown yaw settings: {}".format(sorted(unknown)))
     defaults.update(config)
     for key in ("position_tolerance", "yaw_tolerance_deg", "angular_speed_scale",
-                "braking_width_deg", "position_width", "settled_steps", "settled_height_tolerance"):
-        if defaults[key] <= 0:
+                "braking_width_deg", "position_width", "settled_steps", "settled_height_tolerance",
+                "carry_heading_scale_deg", "lift_height"):
+        if not math.isfinite(defaults[key]) or defaults[key] <= 0:
             raise ValueError("yaw.{} must be positive".format(key))
     for key in ("angular_speed_tolerance", "accuracy_weight", "braking_weight",
                 "position_weight", "initial_yaw_range_deg", "target_offset_range_deg",
-                "settled_linear_speed", "reference_loss_coef"):
-        if defaults[key] < 0:
+                "settled_linear_speed", "reference_loss_coef", "carry_heading_weight",
+                "carry_angular_speed_weight", "in_place_min_yaw_deg"):
+        if not math.isfinite(defaults[key]) or defaults[key] < 0:
             raise ValueError("yaw.{} must be nonnegative".format(key))
     for key in ("initial_yaw_range_deg", "target_offset_range_deg", "yaw_tolerance_deg"):
         if defaults[key] > 180:
             raise ValueError("yaw.{} must be at most 180".format(key))
+    if not isinstance(defaults['staged_transport'], bool):
+        raise ValueError('yaw.staged_transport must be boolean')
+    probability = defaults['in_place_probability']
+    if not isinstance(probability, (int, float)) or isinstance(probability, bool) or not 0 <= probability <= 1:
+        raise ValueError('yaw.in_place_probability must be between zero and one')
+    if probability > 0:
+        if not defaults['enabled'] or not defaults['staged_transport']:
+            raise ValueError('In-place sampling requires enabled staged yaw transport')
+        if not defaults['yaw_tolerance_deg'] < defaults['in_place_min_yaw_deg'] <= defaults['target_offset_range_deg']:
+            raise ValueError('In-place yaw minimum must exceed yaw tolerance and not exceed target offset range')
     return defaults
 
 
@@ -53,13 +68,55 @@ def yaw_features(error, angular_speed, arrived, speed_scale):
                         arrived.to(error.dtype)), -1)
 
 
-def update_yaw_phase(arrived, putdown, distance, error, angular_speed, config):
+def update_yaw_phase(arrived, putdown, distance, error, angular_speed, config, lifted=None):
     """Arrival and putdown latch independently; rotation survives small position drift."""
     at_position = distance < config["position_tolerance"]
+    if config['staged_transport']:
+        if lifted is None:
+            raise ValueError('Staged yaw transport requires pickup state')
+        at_position = at_position & lifted
     arrived = arrived | at_position
     ready = (at_position & (error.abs() < math.radians(config["yaw_tolerance_deg"]))
              & (angular_speed.abs() < config["angular_speed_tolerance"]))
     return arrived, putdown | (arrived & ready)
+
+
+def sample_in_place_targets(target_xy, object_xy, initial_yaw, target_yaw, config):
+    """Replace a configurable fraction of translation goals with nontrivial turns."""
+    if config['in_place_probability'] == 0:
+        return target_xy, target_yaw, torch.zeros_like(initial_yaw, dtype=torch.bool)
+    selected = torch.rand_like(initial_yaw) < config['in_place_probability']
+    low = math.radians(config['in_place_min_yaw_deg'])
+    high = math.radians(config['target_offset_range_deg'])
+    magnitude = low + (high - low) * torch.rand_like(initial_yaw)
+    sign = torch.where(torch.rand_like(initial_yaw) < 0.5, -1., 1.)
+    yaw = torch.where(selected, initial_yaw + sign * magnitude, target_yaw)
+    xy = torch.where(selected[:, None], object_xy, target_xy)
+    return xy, yaw, selected
+
+
+def update_pickup(lifted, reference_yaw, current_yaw, height, supported, upright,
+                  rest_height, config):
+    """Capture heading once, when all active carriers support an upright raised table."""
+    picked_up = supported & upright & (height >= rest_height + config['lift_height'])
+    first_pickup = ~lifted & picked_up
+    return lifted | picked_up, torch.where(first_pickup, current_yaw, reference_yaw)
+
+
+def control_heading_error(current_yaw, target_yaw, reference_yaw, arrived, config):
+    """The same observation slots describe carry heading, then final heading."""
+    reference = target_yaw
+    if config['staged_transport']:
+        reference = torch.where(arrived, target_yaw, reference_yaw)
+    return wrap_angle(reference - current_yaw)
+
+
+def transport_rotation_reward(error, angular_speed, lifted, arrived, config):
+    """Penalties only during transport; no lingering reward for delaying arrival."""
+    heading = (wrap_angle(error) / math.radians(config['carry_heading_scale_deg'])) ** 2
+    speed = (angular_speed / config['angular_speed_scale']) ** 2
+    penalty = config['carry_heading_weight'] * heading + config['carry_angular_speed_weight'] * speed
+    return torch.where(lifted & ~arrived, -penalty, torch.zeros_like(penalty))
 
 
 def rotation_reward(error, angular_speed, distance, arrived, putdown, supported, config):

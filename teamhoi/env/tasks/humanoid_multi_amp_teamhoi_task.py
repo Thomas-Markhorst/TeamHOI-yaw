@@ -16,7 +16,8 @@ from utils.task_util import *
 from utils.polygon import sample_rim, asset_ranges
 from utils.yaw import (YAW_EXTRA_DIM, yaw_settings, quaternion_yaw, yaw_quaternion,
                        wrap_angle, yaw_features, update_yaw_phase, rotation_reward,
-                       placement_metrics)
+                       placement_metrics, sample_in_place_targets, update_pickup,
+                       control_heading_error, transport_rotation_reward)
 
 
 class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
@@ -359,6 +360,9 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
         self.putdown_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.arrived_mask = torch.zeros_like(self.putdown_mask)
         self.settled_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.lifted_mask = torch.zeros_like(self.putdown_mask)
+        self.carry_yaw = torch.zeros(self.num_envs, device=self.device)
+        self.in_place_mask = torch.zeros_like(self.putdown_mask)
 
         if self.log_metrics == True:
             self.steps = torch.zeros(self.num_envs, dtype=torch.int32, device=self.device)
@@ -435,7 +439,13 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
             initial_yaw = (2 * torch.rand(n, device=self.device) - 1) * initial_range
             offset = (2 * torch.rand(n, device=self.device) - 1) * offset_range
             self._obj_states[env_ids, 3:7] = yaw_quaternion(initial_yaw)
-            self._target_rot[env_ids] = yaw_quaternion(initial_yaw + offset)
+            xy, target_yaw, in_place = sample_in_place_targets(
+                self._target_end_pos[env_ids, :2], self._obj_states[env_ids, :2],
+                initial_yaw, initial_yaw + offset, self.yaw_config)
+            self._target_end_pos[env_ids, :2] = xy
+            self._target_rot[env_ids] = yaw_quaternion(target_yaw)
+            self.carry_yaw[env_ids] = initial_yaw
+            self.in_place_mask[env_ids] = in_place
 
         return
 
@@ -464,6 +474,8 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
         self.putdown_mask[env_ids] = False
         self.arrived_mask[env_ids] = False
         self.settled_count[env_ids] = 0
+        self.lifted_mask[env_ids] = False
+        self.in_place_mask[env_ids] = False
         
         return
     
@@ -554,11 +566,23 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
         d = delta_xy.norm(dim=-1)
 
         if self.yaw_enabled:
-            error = wrap_angle(quaternion_yaw(self._target_rot[env_ids]) -
-                               quaternion_yaw(self._obj_states[env_ids, 3:7]))
+            current_yaw = quaternion_yaw(self._obj_states[env_ids, 3:7])
+            if self.yaw_config['staged_transport']:
+                # Same hand-to-rim proximity convention as the existing contact reward.
+                touching = (dists.min(dim=-1).values < 0.07).all(dim=-1).view(-1, num_agents)
+                supported = (touching | ~self.mask[env_ids]).all(dim=-1)
+                q = self._obj_states[env_ids, 3:7]
+                upright = (1 - 2 * (q[:, 0].square() + q[:, 1].square())) > 0.95
+                lifted, reference = update_pickup(
+                    self.lifted_mask[env_ids], self.carry_yaw[env_ids], current_yaw,
+                    self._obj_states[env_ids, 2], supported, upright,
+                    self.obj_height, self.yaw_config)
+                self.lifted_mask[env_ids] = lifted
+                self.carry_yaw[env_ids] = reference
+            error = wrap_angle(quaternion_yaw(self._target_rot[env_ids]) - current_yaw)
             arrived, putdown = update_yaw_phase(
                 self.arrived_mask[env_ids], self.putdown_mask[env_ids], d,
-                error, self._obj_states[env_ids, 12], self.yaw_config)
+                error, self._obj_states[env_ids, 12], self.yaw_config, self.lifted_mask[env_ids])
             self.arrived_mask[env_ids] = arrived
             self.putdown_mask[env_ids] = putdown
         else:
@@ -575,7 +599,10 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
 
         obs = compute_obs(root_states, obj_pos, obj_held_pts, obs_vec6, tar_pos, hand_z, self.putdown_mask[env_ids], num_humanoids = self.num_agents)
         if self.yaw_enabled:
-            extra = yaw_features(error, self._obj_states[env_ids, 12],
+            observation_error = control_heading_error(
+                current_yaw, quaternion_yaw(self._target_rot[env_ids]),
+                self.carry_yaw[env_ids], self.arrived_mask[env_ids], self.yaw_config)
+            extra = yaw_features(observation_error, self._obj_states[env_ids, 12],
                                  self.arrived_mask[env_ids], self.yaw_config['angular_speed_scale'])
             extra = extra[:, None, :].expand(-1, num_agents, -1).reshape(-1, YAW_EXTRA_DIM)
             # Insert before teammate observations so existing object features stay fixed.
@@ -731,7 +758,13 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
             r_yaw = rotation_reward(error, self._obj_states[:, 12], distance,
                                     self.arrived_mask, self.putdown_mask, move_mask,
                                     self.yaw_config)
-            total_reward = total_reward + r_yaw.repeat_interleave(n_agents)
+            carry_error = wrap_angle(self.carry_yaw - quaternion_yaw(obj_rot))
+            r_carry = torch.zeros_like(r_yaw)
+            if self.yaw_config['staged_transport']:
+                r_carry = transport_rotation_reward(
+                    carry_error, self._obj_states[:, 12], self.lifted_mask,
+                    self.arrived_mask, self.yaw_config)
+            total_reward = total_reward + (r_yaw + r_carry).repeat_interleave(n_agents)
             distance, error, released, self.settled_count, success = placement_metrics(
                 self._obj_states, target_pos, self._target_rot,
                 hands_dist.view(n_envs, n_agents, 2), self.mask, self.putdown_mask,
@@ -743,6 +776,9 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
                 'arrived': self.arrived_mask.clone(), 'putdown': self.putdown_mask.clone(),
                 'released': released.clone(), 'settled_success': success.clone(),
                 'rotation_reward': r_yaw.clone(),
+                'transport_rotation_reward': r_carry.clone(),
+                'carry_heading_error': carry_error.abs().clone(),
+                'lifted': self.lifted_mask.clone(), 'in_place': self.in_place_mask.clone(),
             }
 
         self.rew_buf = total_reward.view(n_envs, n_agents)

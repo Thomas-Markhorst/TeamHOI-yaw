@@ -15,7 +15,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'teamhoi'))
 from utils.yaw import (yaw_settings, wrap_angle, quaternion_yaw, yaw_quaternion,
-                       yaw_features, update_yaw_phase, rotation_reward, placement_metrics)
+                       yaw_features, update_yaw_phase, rotation_reward, placement_metrics,
+                       sample_in_place_targets, control_heading_error, update_pickup)
 from utils.yaw_checkpoint import expand_yaw_checkpoint
 from utils.yaw_reference import build_reference, reference_loss
 
@@ -28,7 +29,8 @@ def task_method(name, **extra):
     fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == name)
     env = dict(torch=torch, YAW_EXTRA_DIM=4, wrap_angle=wrap_angle,
                quaternion_yaw=quaternion_yaw, yaw_features=yaw_features,
-               update_yaw_phase=update_yaw_phase)
+               update_yaw_phase=update_yaw_phase, sample_in_place_targets=sample_in_place_targets,
+               control_heading_error=control_heading_error, update_pickup=update_pickup)
     env.update(extra)
     exec(compile(ast.Module(body=[fn], type_ignores=[]), str(path), 'exec'), env)
     return env[name]
@@ -127,6 +129,7 @@ class YawTaskTests(unittest.TestCase):
         t._rigid_body_pos_tensor = torch.zeros(4, 2, 2, 3)
         t._lift_body_ids = torch.tensor([0, 1]); t.obj_held_points = torch.zeros(4, 64, 3)
         t.putdown_mask = torch.zeros(4, dtype=torch.bool); t.arrived_mask = t.putdown_mask.clone()
+        t.lifted_mask = torch.zeros(4, dtype=torch.bool); t.carry_yaw = torch.zeros(4)
         t.task_obs_dim = [3, 192, 6, 7, 18]
         t.update_held_points = lambda *_: None
         before = t._target_end_pos.clone()
@@ -151,6 +154,8 @@ class YawTaskTests(unittest.TestCase):
         t = types.SimpleNamespace(device='cpu', yaw_enabled=True, yaw_config=self.cfg,
                                   obj_height=.82, _obj_states=torch.randn(1000,13),
                                   _target_rot=yaw_quaternion(torch.zeros(1000)))
+        t._target_end_pos = torch.ones(1000,3)
+        t.carry_yaw = torch.zeros(1000); t.in_place_mask = torch.zeros(1000,dtype=torch.bool)
         before=t._obj_states.clone(); ids=torch.arange(0,1000,2)
         method(t,ids)
         initial=quaternion_yaw(t._obj_states[ids,3:7])
