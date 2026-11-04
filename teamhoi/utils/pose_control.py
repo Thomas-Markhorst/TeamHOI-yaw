@@ -19,8 +19,10 @@ def pose_settings(config):
         raise ValueError('pose_control requires boolean enabled and yaw/pitch_roll mode')
     if not 0 <= values['walking_probability'] <= 1:
         raise ValueError('Invalid walking_probability')
-    if not 0 < values['angle_min_deg'] <= values['angle_max_deg'] <= 90:
-        raise ValueError('Pose angles must satisfy 0 < min <= max <= 90 degrees')
+    if not 0 <= values['angle_min_deg'] <= values['angle_max_deg'] <= 90 or values['angle_max_deg'] == 0:
+        raise ValueError('Pose angles must satisfy 0 <= min <= max <= 90 degrees, max > 0')
+    if values['mode'] == 'pitch_roll' and values['angle_min_deg'] == 0:
+        raise ValueError('Pitch/roll commands require nonzero minimum angle')
     for key in ('rotation_weight', 'lift_height', 'position_tolerance',
                 'angle_tolerance_deg', 'speed_tolerance', 'settled_steps', 'angular_speed_scale'):
         if not math.isfinite(values[key]) or values[key] <= 0:
@@ -100,8 +102,8 @@ def lifted_support(height, supported, rest_height, config):
 
 def pose_rotation_reward(error, height, supported, rest_height, config):
     yaw_cost = error[..., 2].abs() / math.pi
-    # Average the two tilt-axis errors to retain the agreed tilt reward scale.
-    tilt_cost = error[..., :2].abs().mean(-1) / (math.pi/2)
+    # Each single-axis tilt retains the requested pi/2 normalization.
+    tilt_cost = error[..., :2].abs().sum(-1) / (math.pi/2)
     accuracy = 1. - yaw_cost - tilt_cost
     return torch.where(lifted_support(height, supported, rest_height, config),
                        config['rotation_weight']*accuracy, torch.zeros_like(accuracy))

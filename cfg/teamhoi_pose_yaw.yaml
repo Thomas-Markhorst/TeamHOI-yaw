@@ -107,7 +107,7 @@ params:
       enabled: True
       mode: yaw
       walking_probability: 0.15
-      angle_min_deg: 5.0
+      angle_min_deg: 0.0
       angle_max_deg: 30.0
       initial_yaw_range_deg: 5.0
       rotation_weight: 1.0

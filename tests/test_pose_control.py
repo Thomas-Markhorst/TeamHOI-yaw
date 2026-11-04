@@ -54,8 +54,8 @@ class PoseTests(unittest.TestCase):
         cfg=pose_settings({'enabled':True});height=torch.tensor([.95]);yes=torch.tensor([True])
         def reward(e,h=height,s=yes):return pose_rotation_reward(torch.tensor([e]),h,s,.82,cfg).item()
         self.assertAlmostEqual(reward([0.,0.,.3]),1-.3/math.pi,places=6)
-        # Average of pitch/roll errors, each normalized by pi/2.
-        self.assertAlmostEqual(reward([.3,0.,0.]),1-(.3/2)/(math.pi/2),places=6)
+        # A single-axis tilt uses pi/2, without dilution by averaging axes.
+        self.assertAlmostEqual(reward([.3,0.,0.]),1-.3/(math.pi/2),places=6)
         self.assertGreater(reward([.1,0.,0.]),reward([.3,0.,0.]))
         self.assertEqual(reward([0.,0.,0.],s=~yes),0.)
         self.assertEqual(reward([0.,0.,0.],h=torch.tensor([.85])),0.)

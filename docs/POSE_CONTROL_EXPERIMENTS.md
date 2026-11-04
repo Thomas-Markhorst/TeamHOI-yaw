@@ -11,7 +11,7 @@ These are opt-in experiments. Original, destination-yaw, reward-comparison and L
 - 15% level walking targets at the existing 3–10 m distances; retain initial heading.
 - 85% rotation targets at the initial table XY; one local-axis command per episode. No transport leg in those cases.
 - Initial table yaw remains uniform +/-5 degrees, as in the prior yaw comparison.
-- Yaw run: one local yaw offset, magnitude 5–30 degrees, either sign.
+- Yaw run: one local yaw offset, uniform -30 to +30 degrees.
 - Pitch/roll run: randomly choose one local roll OR pitch offset, magnitude 5–30 degrees, either sign. No combined commands or command switching yet.
 - Targets are quaternion compositions `q_initial * q_local_command`. Orientation error is extracted from `inverse(q_current) * q_target`, not a difference of world Euler angles. Angular velocity is transformed into the current table frame. Errors use local roll/pitch/yaw Euler components, suitable for the bounded single-axis tilt commands; this is not a general SO(3) metric for arbitrary extreme tilts.
 
@@ -22,9 +22,9 @@ Both runs use the same 12-input goal: original XYZ plus sin(local error XYZ), co
 The orientation reward is:
 
     1 - abs(yaw_error)/pi
-      - mean(abs(roll_error), abs(pitch_error))/(pi/2)
+      - (abs(roll_error) + abs(pitch_error))/(pi/2)
 
-This combines yaw accuracy with the average of the two tilt accuracies, subtracting their redundant constant. Maximum is 1; every axis is supervised in both experiments, even when its target is zero. Rotation weight is 1 in the task reward. No angular deadband, velocity penalty, progress term or extra position-drift term.
+This sums the three axis error costs while retaining one shared accuracy constant. A single-axis tilt has the requested pi/2 scale; yaw has the pi scale. Maximum is 1; every axis is supervised in both experiments, even when its target is zero. Rotation weight is 1 in the task reward. No angular deadband, velocity penalty, progress term or extra position-drift term.
 
 Rotation reward is active only when all four agents have both hands within the existing 4 cm rim proximity threshold and table-root height exceeds the reset height by 8 cm. There is no arrival condition or latched rotation phase. The table resets at resting-height +3 cm, so the lifted threshold is approximately 0.93 m.
 
