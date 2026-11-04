@@ -94,10 +94,10 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(t.settled_count.tolist(),[7,0,7])
 
     def test_subset_observations_gate_pickup_and_expose_phase_heading(self):
-        def compute_obs(roots,pos,rim,vec,target,hand_z,putdown,num_humanoids):
+        def compute_obs(roots,pos,rim,vec,target,hand_z,putdown,num_humanoids,expose_height=False):
             return roots.new_zeros((roots.shape[0],204+9*num_humanoids))
         method=task_method('_compute_task_obs_tensor',compute_obs=compute_obs)
-        t=types.SimpleNamespace(device='cpu',num_envs=3,num_agents=2,yaw_enabled=True,yaw_config=self.cfg,
+        t=types.SimpleNamespace(device='cpu',num_envs=3,num_agents=2,pose_enabled=False,yaw_enabled=True,yaw_config=self.cfg,
             viz=False,log_metrics=False,obj_height=.82,mask=torch.ones(3,2,dtype=torch.bool),
             _humanoid_root_states_tensor=torch.zeros(3,2,13),_obj_states=torch.zeros(3,13),
             _target_rot=yaw_quaternion(torch.ones(3)*.5),_target_end_pos=torch.zeros(3,3),

@@ -208,7 +208,7 @@ def compute_coverage_reward(
     return r_cov
 
 
-def compute_hands_and_lifts_reward(hands_pos, target_pts, np_dist, dist_threshold = 3.0, proxy_scale = 5.0, held_target_z = 0.94):
+def compute_hands_and_lifts_reward(hands_pos, target_pts, np_dist, dist_threshold = 3.0, proxy_scale = 5.0, held_target_z = 0.94, pose_control: bool = False):
     """
     hands_pos: (B, 2, 3)   -> positions of left/right hands
     target_pts: (B, K, 3)  -> rim points for each env
@@ -266,6 +266,8 @@ def compute_hands_and_lifts_reward(hands_pos, target_pts, np_dist, dist_threshol
                                    torch.exp(-z_softness * cos_theta))
     z_above = z_above_per_hand.mean(dim=-1)    
 
+    if pose_control:
+        same_height_reward = torch.ones_like(same_height_reward)
     hand_reward = prox_reward * z_above * sep_reward * same_height_reward
 
     mask_outside = np_dist > dist_threshold

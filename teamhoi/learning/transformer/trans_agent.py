@@ -268,6 +268,20 @@ class TransAgent(common_agent.CommonAgent):
             "Rewards/amp_rewards": torch.mean(amp_rewards['disc_rewards'][mask]),
             "Rewards/all_rewards": torch.mean(mb_rewards_normalized[mask]),
             "epoch": self.epoch})
+        if 'pose_metrics' in infos:
+            metrics = infos['pose_metrics']
+            supported = metrics['supported']
+            denominator = supported.sum().clamp_min(1)
+            wandb.log({
+                'Pose/orientation_error_deg_supported': (metrics['orientation_error']*supported).sum()/denominator*(180./math.pi),
+                'Pose/position_error_m': metrics['position_error'].mean(),
+                'Pose/rotation_reward': metrics['rotation_reward'].mean(),
+                'Pose/supported_fraction': supported.float().mean(),
+                'Pose/hold_success_fraction': metrics['hold_success'].float().mean(),
+                'Pose/in_place_fraction': metrics['in_place'].float().mean(),
+                'Pose/object_height': metrics['object_height'].mean(),
+                'epoch': self.epoch,
+            })
         if 'yaw_metrics' in infos:
             metrics = infos['yaw_metrics']
             arrived = metrics['arrived']

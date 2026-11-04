@@ -114,14 +114,14 @@ class YawTaskTests(unittest.TestCase):
         self.assertFalse(success.item())
 
     def test_subset_observations_do_not_corrupt_other_environments(self):
-        def compute_obs(roots, pos, rim, vec, target, hand_z, putdown, num_humanoids):
+        def compute_obs(roots, pos, rim, vec, target, hand_z, putdown, num_humanoids, expose_height=False):
             # Stand in for the unchanged legacy geometric feature extractor.
             out = roots.new_zeros((roots.shape[0], 204 + 9 * num_humanoids))
             out[:, 201:204] = target
             return out
         method = task_method('_compute_task_obs_tensor', compute_obs=compute_obs)
         t = types.SimpleNamespace(device='cpu', num_envs=4, num_agents=2,
-            yaw_enabled=True, yaw_config=self.cfg, viz=False, log_metrics=False)
+            pose_enabled=False, yaw_enabled=True, yaw_config=self.cfg, viz=False, log_metrics=False)
         t._humanoid_root_states_tensor = torch.zeros(4, 2, 13)
         t._obj_states = torch.zeros(4, 13); t._obj_states[:, 6] = 1
         t._target_rot = yaw_quaternion(torch.tensor([.3, 0., .3, .5]))
@@ -151,7 +151,7 @@ class YawTaskTests(unittest.TestCase):
     def test_initial_and_target_yaw_randomization_respects_subset(self):
         import numpy as np
         method = task_method('_reset_obj', np=np, yaw_quaternion=yaw_quaternion)
-        t = types.SimpleNamespace(device='cpu', yaw_enabled=True, yaw_config=self.cfg,
+        t = types.SimpleNamespace(device='cpu', pose_enabled=False, yaw_enabled=True, yaw_config=self.cfg,
                                   obj_height=.82, _obj_states=torch.randn(1000,13),
                                   _target_rot=yaw_quaternion(torch.zeros(1000)))
         t._target_end_pos = torch.ones(1000,3)

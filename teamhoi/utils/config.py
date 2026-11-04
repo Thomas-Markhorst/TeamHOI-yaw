@@ -158,8 +158,9 @@ def load_cfg(args):
         ckpt_path = os.path.join(args.output_path, exp_name, 'ckpt.pth')
         if os.path.exists(ckpt_path):
             raise ValueError('Experiment already has a checkpoint; use a new --exp_name or resume it')
-        if not cfg_train['params']['config'].get('yaw', {}).get('enabled', False):
-            raise ValueError('--init_from_checkpoint requires cfg/teamhoi_yaw.yaml')
+        if not (cfg_train['params']['config'].get('yaw', {}).get('enabled', False) or
+                cfg_train['params']['config'].get('pose_control', {}).get('enabled', False)):
+            raise ValueError('--init_from_checkpoint requires yaw or pose_control enabled')
         cfg_train['params']['load_checkpoint'] = False
         cfg_train['params']['config']['init_from_checkpoint'] = args.init_from_checkpoint
 

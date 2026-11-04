@@ -14,6 +14,9 @@ import pandas as pd
 from env.tasks.reward_functions import *
 from utils.task_util import *
 from utils.polygon import sample_rim, asset_ranges
+from utils.pose_control import (POSE_EXTRA_DIM, pose_settings, pose_features,
+                                sample_pose_targets, local_orientation_error,
+                                pose_rotation_reward, pose_hold_metrics)
 from utils.yaw import (YAW_EXTRA_DIM, yaw_settings, quaternion_yaw, yaw_quaternion,
                        wrap_angle, yaw_features, update_yaw_phase, rotation_reward,
                        placement_metrics, sample_in_place_targets, update_pickup,
@@ -34,8 +37,15 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
             train_cfg = yaml.safe_load(f)
         
         self.yaw_config = yaw_settings(train_cfg['params']['config'].get('yaw', {}))
-        self.yaw_enabled = self.yaw_config['enabled']
-        goal_dim = 3 + (YAW_EXTRA_DIM if self.yaw_enabled else 0)
+        self.pose_config = pose_settings(train_cfg['params']['config'].get('pose_control', {}))
+        self.pose_enabled = self.pose_config['enabled']
+        self.yaw_enabled = self.yaw_config['enabled'] or self.pose_enabled
+        self.extra_goal_dim = POSE_EXTRA_DIM if self.pose_enabled else (YAW_EXTRA_DIM if self.yaw_enabled else 0)
+        goal_dim = 3 + self.extra_goal_dim
+        if self.pose_enabled and (cfg['env_max_humanoids'] != 4 or cfg['fix_num_humanoids'] != 4):
+            raise ValueError('These pose experiments require exactly four physical/active agents')
+        if self.pose_enabled and self.yaw_config['reference_loss_coef'] != 0:
+            raise ValueError('Arrival-based reference loss is not supported for flag-free pose commands')
         self.dist_threshold = float(train_cfg['params']['config'].get("dist_threshold", 10000.0))
         self._target_dist_min = 3 
         self._target_dist_max = 10
@@ -434,7 +444,7 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
         self._obj_states[env_ids, 3:7] = torch.tensor([.0, 0.0, 0.0, 1.0], dtype=self._obj_states.dtype, device=self._obj_states.device)
         self._obj_states[env_ids, 7:] = 0.0
         if self.yaw_enabled:
-            initial_range = np.deg2rad(self.yaw_config['initial_yaw_range_deg'])
+            initial_range = np.deg2rad((self.pose_config if self.pose_enabled else self.yaw_config)['initial_yaw_range_deg'])
             offset_range = np.deg2rad(self.yaw_config['target_offset_range_deg'])
             initial_yaw = (2 * torch.rand(n, device=self.device) - 1) * initial_range
             offset = (2 * torch.rand(n, device=self.device) - 1) * offset_range
@@ -446,6 +456,13 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
             self._target_rot[env_ids] = yaw_quaternion(target_yaw)
             self.carry_yaw[env_ids] = initial_yaw
             self.in_place_mask[env_ids] = in_place
+            if self.pose_enabled:
+                xy, target, in_place = sample_pose_targets(
+                    self._obj_states[env_ids, 3:7], self._obj_states[env_ids, :2],
+                    self._target_end_pos[env_ids, :2], self.pose_config)
+                self._target_end_pos[env_ids, :2] = xy
+                self._target_rot[env_ids] = target
+                self.in_place_mask[env_ids] = in_place
 
         return
 
@@ -565,7 +582,9 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
         delta_xy = self._target_end_pos[env_ids][...,:2] - self._obj_states[env_ids][..., :2]
         d = delta_xy.norm(dim=-1)
 
-        if self.yaw_enabled:
+        if self.pose_enabled:
+            pass  # Pose holding has no arrival-dependent phase or automatic placement.
+        elif self.yaw_enabled:
             current_yaw = quaternion_yaw(self._obj_states[env_ids, 3:7])
             if self.yaw_config['staged_transport']:
                 # Same hand-to-rim proximity convention as the existing contact reward.
@@ -597,8 +616,14 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
 
         hand_z = hand_states[:,:,2].max(dim=-1)[0]
 
-        obs = compute_obs(root_states, obj_pos, obj_held_pts, obs_vec6, tar_pos, hand_z, self.putdown_mask[env_ids], num_humanoids = self.num_agents)
-        if self.yaw_enabled:
+        obs = compute_obs(root_states, obj_pos, obj_held_pts, obs_vec6, tar_pos, hand_z, self.putdown_mask[env_ids], num_humanoids = self.num_agents, expose_height=self.pose_enabled)
+        if self.pose_enabled:
+            extra = pose_features(self._obj_states[env_ids, 3:7], self._target_rot[env_ids],
+                                  self._obj_states[env_ids, 10:13], self.pose_config['angular_speed_scale'])
+            extra = extra[:, None, :].expand(-1, num_agents, -1).reshape(-1, POSE_EXTRA_DIM)
+            split = sum(self.task_obs_dim[:-1]) - POSE_EXTRA_DIM
+            obs = torch.cat((obs[:, :split], extra, obs[:, split:]), dim=-1)
+        elif self.yaw_enabled:
             observation_error = control_heading_error(
                 current_yaw, quaternion_yaw(self._target_rot[env_ids]),
                 self.carry_yaw[env_ids], self.arrived_mask[env_ids], self.yaw_config)
@@ -714,7 +739,12 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
 
         # hands and contacts reward: 4,5,6
         r_hand, r_contact, r_lift, contact_mask, hands_dist = compute_hands_and_lifts_reward(hands_pos_all, rim_pts_all, self.dist_to_nearest_point, \
-                                                                                             dist_threshold=self.dist_threshold, held_target_z=self.target_height)
+                                                                                             dist_threshold=self.dist_threshold, held_target_z=self.target_height,
+                                                                                             pose_control=self.pose_enabled)
+        if self.pose_enabled:
+            # Reward lifting clear of the resting state, without a preferred rim height.
+            lift_fraction = ((obj_center[:, 2] - self.obj_height - 0.03) / self.pose_config['lift_height']).clamp(0., 1.)
+            r_lift = lift_fraction.repeat_interleave(n_agents) * contact_mask.mean(-1)
         
         # transport reward: 7,8
         target_pos = self._target_end_pos
@@ -752,7 +782,21 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
         w[3] * r_form + w[4] * (r_hand * r_cov) + w[5] * r_contact + w[6] * (r_lift * r_cov) + \
         w[7] * r_transport + w[8] * r_align + w[9] * r_putdown
 
-        if self.yaw_enabled:
+        if self.pose_enabled:
+            error = local_orientation_error(obj_rot, self._target_rot)
+            r_rotation = pose_rotation_reward(error, obj_center[:, 2], move_mask, self.obj_height, self.pose_config)
+            total_reward = total_reward + r_rotation.repeat_interleave(n_agents)
+            self.settled_count, success, distance, angle = pose_hold_metrics(
+                obj_rot, self._target_rot, obj_center, target_pos, self._obj_states[:, 10:13],
+                move_mask, self.obj_height, self.settled_count, self.pose_config)
+            self.extras['pose_metrics'] = {
+                'position_error': distance.clone(), 'orientation_error': angle.clone(),
+                'axis_error': error.clone(), 'rotation_reward': r_rotation.clone(),
+                'supported': move_mask.clone(), 'hold_success': success.clone(),
+                'in_place': self.in_place_mask.clone(),
+                'object_height': obj_center[:, 2].clone(),
+            }
+        elif self.yaw_enabled:
             distance = (obj_center[:, :2] - target_pos[:, :2]).norm(dim=-1)
             error = wrap_angle(quaternion_yaw(self._target_rot) - quaternion_yaw(obj_rot))
             r_yaw = rotation_reward(error, self._obj_states[:, 12], distance,
@@ -839,7 +883,7 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
             draw_circle(self.gym, self.viewer, env_ptr, pos_end[i], radius = 1)
 
         
-def compute_obs(root_states, obj_pos, obj_held_pts, obs_vec6, tar_pos, nn_pts_z, putdown_mask, num_humanoids):
+def compute_obs(root_states, obj_pos, obj_held_pts, obs_vec6, tar_pos, nn_pts_z, putdown_mask, num_humanoids, expose_height: bool = False):
 
     # Root states
     ######################
@@ -875,7 +919,8 @@ def compute_obs(root_states, obj_pos, obj_held_pts, obs_vec6, tar_pos, nn_pts_z,
     local_tar_pos[:,2] = local_tar_pos[:,2] - nn_pts_z
     putdown_mask_all = torch.repeat_interleave(putdown_mask, repeats=num_humanoids, dim=0)    
 
-    local_tar_pos[:,2][~putdown_mask_all] = 0
+    if not expose_height:
+        local_tar_pos[:,2][~putdown_mask_all] = 0
     local_tar_pos_obs = quat_rotate(heading_rot, local_tar_pos)
     
     # Object rim observation
