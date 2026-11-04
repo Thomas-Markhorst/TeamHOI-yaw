@@ -42,7 +42,7 @@ Training logs expose `Pose/*` metrics, sampled at the last step of each rollout,
 
 ## Launch
 
-Use separate outputs and seed 42, 1024 environments, episode length 900, rollout length 32. Configs stop after 4000 completed iterations and save numbered checkpoints every 50.
+Use separate outputs and seed 42, 1024 environments, episode length 900, rollout length 32. PPO minibatch size is 8192: 16384 x four active agents reaches 65536 attention rows and fails with the installed CUDA attention backend. This matches the existing larger-team safeguard. Relative to a 16384 minibatch it doubles optimizer minibatches per epoch; rollout samples and six mini-epochs are unchanged. Configs stop after 4000 completed iterations and save numbered checkpoints every 50.
 
 ```bash
 python teamhoi/run.py --task HumanoidAMPTableLift --headless \

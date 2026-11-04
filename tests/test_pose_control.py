@@ -97,6 +97,8 @@ class PoseTests(unittest.TestCase):
             self.assertEqual(cfg['w'][7],1.)
             self.assertEqual(pose_settings(cfg['pose_control'])['walking_probability'],.15)
             self.assertEqual(cfg['max_epochs'],3999)
+            self.assertLess(cfg['minibatch_size']*4,65536)
+            self.assertEqual((1024*cfg['horizon_length']) % cfg['minibatch_size'],0)
 
     def test_real_hand_reward_keeps_separation_and_removes_equal_height_only(self):
         path=ROOT/'teamhoi/env/tasks/reward_functions.py'
