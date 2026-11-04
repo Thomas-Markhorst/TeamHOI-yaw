@@ -14,6 +14,7 @@ import pandas as pd
 from env.tasks.reward_functions import *
 from utils.task_util import *
 from utils.polygon import sample_rim, asset_ranges
+from utils.table_clearance import load_collision_geometry, lowest_collision_offset, rotation_height_limit
 from utils.pose_control import (POSE_EXTRA_DIM, pose_settings, pose_features,
                                 sample_pose_targets, local_orientation_error,
                                 pose_rotation_reward, pose_hold_metrics)
@@ -63,6 +64,10 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
                 asset_cfg = json.load(f)
             self.asset_cfgs.append(asset_cfg)
             self.assets.append(asset_cfg["asset"])
+
+        if self.pose_enabled:
+            self.pose_geometries = [load_collision_geometry(os.path.join('assets', asset), device=device)
+                                    for asset in self.assets]
 
         self.ranges = asset_ranges(self.num_envs, len(self.assets),
                                    train_cfg['params']['config'].get('asset_weights'))
@@ -686,15 +691,23 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
 
         obj_pos = self._obj_states[..., :3]
         obj_terminate_h = self.obj_height-0.12
+        height_limit = None
+        if self.pose_enabled:
+            height_limit = rotation_height_limit(self._lowest_table_offset(),
+                self.pose_config['target_clearance'], self.pose_config['height_limit_margin'])
 
         reset, terminate = compute_humanoid_reset(
             dummy_shape, progress_buf_n_agents, contact_forces_all,
             self._contact_body_ids, rigid_body_pos_all, self.max_episode_length,
-            self._enable_early_termination, self._termination_heights, obj_pos, obj_height_termination = obj_terminate_h, num_humanoids=self.num_agents)
+            self._enable_early_termination, self._termination_heights, obj_pos, obj_height_termination = obj_terminate_h, num_humanoids=self.num_agents, obj_height_limit=height_limit)
         
         self.reset_buf[:], self._terminate_buf[:] = reset, terminate
 
         return
+
+    def _lowest_table_offset(self):
+        return torch.cat([lowest_collision_offset(self._obj_states[start:end, 3:7], geometry)
+                          for (start, end), geometry in zip(self.ranges, self.pose_geometries)])
 
     def _compute_reward(self, actions):
         w = self.w
@@ -742,8 +755,9 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
                                                                                              dist_threshold=self.dist_threshold, held_target_z=self.target_height,
                                                                                              pose_control=self.pose_enabled)
         if self.pose_enabled:
-            # Reward lifting clear of the resting state, without a preferred rim height.
-            lift_fraction = ((obj_center[:, 2] - self.obj_height - 0.03) / self.pose_config['lift_height']).clamp(0., 1.)
+            # Exact lowest collision point, including legs; floor plane is z=0.
+            clearance = obj_center[:, 2] + self._lowest_table_offset()
+            lift_fraction = (clearance / self.pose_config['target_clearance']).clamp(0., 1.)
             r_lift = lift_fraction.repeat_interleave(n_agents) * contact_mask.mean(-1)
         
         # transport reward: 7,8
@@ -784,17 +798,17 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
 
         if self.pose_enabled:
             error = local_orientation_error(obj_rot, self._target_rot)
-            r_rotation = pose_rotation_reward(error, obj_center[:, 2], move_mask, self.obj_height, self.pose_config)
+            r_rotation = pose_rotation_reward(error, clearance, move_mask, self.pose_config)
             total_reward = total_reward + r_rotation.repeat_interleave(n_agents)
             self.settled_count, success, distance, angle = pose_hold_metrics(
                 obj_rot, self._target_rot, obj_center, target_pos, self._obj_states[:, 10:13],
-                move_mask, self.obj_height, self.settled_count, self.pose_config)
+                move_mask, clearance, self.settled_count, self.pose_config)
             self.extras['pose_metrics'] = {
                 'position_error': distance.clone(), 'orientation_error': angle.clone(),
                 'axis_error': error.clone(), 'rotation_reward': r_rotation.clone(),
                 'supported': move_mask.clone(), 'hold_success': success.clone(),
                 'in_place': self.in_place_mask.clone(),
-                'object_height': obj_center[:, 2].clone(),
+                'object_height': obj_center[:, 2].clone(), 'clearance': clearance.clone(),
             }
         elif self.yaw_enabled:
             distance = (obj_center[:, :2] - target_pos[:, :2]).norm(dim=-1)
@@ -971,6 +985,7 @@ def compute_humanoid_reset(
     obj_pos,
     obj_height_termination,
     num_humanoids,
+    obj_height_limit=None,
 ):
 
     terminated = torch.zeros_like(reset_buf)
@@ -1001,7 +1016,10 @@ def compute_humanoid_reset(
         # ---------------- object height check --------------------
         obj_height = obj_pos[..., 2]             # (B,)
         obj_low = obj_height < obj_height_termination
-        obj_high = obj_height > 1.30
+        if obj_height_limit is None:
+            obj_high = obj_height > 1.30
+        else:
+            obj_high = obj_height > obj_height_limit
         # --------------------------------------------------------------
 
         has_failed *= (progress_buf > 1)

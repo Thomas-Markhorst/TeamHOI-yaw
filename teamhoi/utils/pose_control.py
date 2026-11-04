@@ -8,7 +8,7 @@ POSE_EXTRA_DIM = 9  # sin/cos of local roll,pitch,yaw error; local angular veloc
 def pose_settings(config):
     values = dict(enabled=False, mode='yaw', walking_probability=.15,
                   angle_min_deg=5., angle_max_deg=30., initial_yaw_range_deg=5.,
-                  rotation_weight=1., lift_height=.08, position_tolerance=.03,
+                  rotation_weight=1., target_clearance=.13, height_limit_margin=.15, position_tolerance=.03,
                   angle_tolerance_deg=5., speed_tolerance=.1, settled_steps=15,
                   angular_speed_scale=1.)
     unknown = set(config) - set(values)
@@ -23,7 +23,7 @@ def pose_settings(config):
         raise ValueError('Pose angles must satisfy 0 <= min <= max <= 90 degrees, max > 0')
     if values['mode'] == 'pitch_roll' and values['angle_min_deg'] == 0:
         raise ValueError('Pitch/roll commands require nonzero minimum angle')
-    for key in ('rotation_weight', 'lift_height', 'position_tolerance',
+    for key in ('rotation_weight', 'target_clearance', 'height_limit_margin', 'position_tolerance',
                 'angle_tolerance_deg', 'speed_tolerance', 'settled_steps', 'angular_speed_scale'):
         if not math.isfinite(values[key]) or values[key] <= 0:
             raise ValueError('pose_control.{} must be positive'.format(key))
@@ -95,26 +95,25 @@ def sample_pose_targets(initial_rotation, initial_xy, walking_xy, config):
     return xy, target, ~walking
 
 
-def lifted_support(height, supported, rest_height, config):
-    # Default object reset is rest_height + .03; avoid rewarding an unlifted table.
-    return supported & (height >= rest_height + .03 + config['lift_height'])
+def lifted_support(clearance, supported, config):
+    return supported & (clearance >= config['target_clearance'])
 
 
-def pose_rotation_reward(error, height, supported, rest_height, config):
+def pose_rotation_reward(error, clearance, supported, config):
     yaw_cost = error[..., 2].abs() / math.pi
     # Each single-axis tilt retains the requested pi/2 normalization.
     tilt_cost = error[..., :2].abs().sum(-1) / (math.pi/2)
     accuracy = 1. - yaw_cost - tilt_cost
-    return torch.where(lifted_support(height, supported, rest_height, config),
+    return torch.where(lifted_support(clearance, supported, config),
                        config['rotation_weight']*accuracy, torch.zeros_like(accuracy))
 
 
 def pose_hold_metrics(current, target, position, target_position, angular_velocity,
-                      supported, rest_height, previous_count, config):
+                      supported, clearance, previous_count, config):
     relative = quat_mul(quat_conjugate(current), target)
     angle = 2*torch.atan2(relative[..., :3].norm(dim=-1), relative[..., 3].abs())
     distance = (position[..., :2]-target_position[..., :2]).norm(dim=-1)
-    valid = (lifted_support(position[..., 2], supported, rest_height, config)
+    valid = (lifted_support(clearance, supported, config)
              & (angle < math.radians(config['angle_tolerance_deg']))
              & (distance < config['position_tolerance'])
              & (angular_velocity.norm(dim=-1) < config['speed_tolerance']))

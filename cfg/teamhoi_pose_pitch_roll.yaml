@@ -111,7 +111,8 @@ params:
       angle_max_deg: 30.0
       initial_yaw_range_deg: 5.0
       rotation_weight: 1.0
-      lift_height: 0.08
+      target_clearance: 0.13
+      height_limit_margin: 0.15
       position_tolerance: 0.03
       angle_tolerance_deg: 5.0
       speed_tolerance: 0.1

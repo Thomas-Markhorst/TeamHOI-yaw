@@ -51,22 +51,22 @@ class PoseTests(unittest.TestCase):
             self.assertLessEqual(magnitude.max().item(),math.radians(30)+1e-6)
 
     def test_reward_has_no_arrival_distance_or_velocity_gate(self):
-        cfg=pose_settings({'enabled':True});height=torch.tensor([.95]);yes=torch.tensor([True])
-        def reward(e,h=height,s=yes):return pose_rotation_reward(torch.tensor([e]),h,s,.82,cfg).item()
+        cfg=pose_settings({'enabled':True});height=torch.tensor([.14]);yes=torch.tensor([True])
+        def reward(e,h=height,s=yes):return pose_rotation_reward(torch.tensor([e]),h,s,cfg).item()
         self.assertAlmostEqual(reward([0.,0.,.3]),1-.3/math.pi,places=6)
         # A single-axis tilt uses pi/2, without dilution by averaging axes.
         self.assertAlmostEqual(reward([.3,0.,0.]),1-.3/(math.pi/2),places=6)
         self.assertGreater(reward([.1,0.,0.]),reward([.3,0.,0.]))
         self.assertEqual(reward([0.,0.,0.],s=~yes),0.)
-        self.assertEqual(reward([0.,0.,0.],h=torch.tensor([.85])),0.)
+        self.assertEqual(reward([0.,0.,0.],h=torch.tensor([.01])),0.)
 
     def test_hold_accepts_tilt_and_variable_height_but_requires_support(self):
         cfg=pose_settings({'enabled':True});q=axis_quaternion(torch.tensor([.5]),0)
         pos=torch.tensor([[0.,0.,1.05]]);omega=torch.zeros(1,3);yes=torch.tensor([True]);count=torch.zeros(1,dtype=torch.long)
-        for _ in range(15):count,success,_,_=pose_hold_metrics(q,q,pos,pos,omega,yes,.82,count,cfg)
+        for _ in range(15):count,success,_,_=pose_hold_metrics(q,q,pos,pos,omega,yes,torch.tensor([.14]),count,cfg)
         self.assertTrue(success.item())
         for badpos,badomega,support in [(pos+torch.tensor([[.05,0.,0.]]),omega,yes),(pos,omega+.2,yes),(pos,omega,~yes)]:
-            count,success,_,_=pose_hold_metrics(q,q,badpos,pos,badomega,support,.82,count,cfg)
+            count,success,_,_=pose_hold_metrics(q,q,badpos,pos,badomega,support,torch.tensor([.14]),count,cfg)
             self.assertFalse(success.item());self.assertEqual(count.item(),0)
 
     def test_real_subset_observations_have_no_phase_flag_or_auto_putdown(self):

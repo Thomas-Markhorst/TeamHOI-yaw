@@ -280,6 +280,7 @@ class TransAgent(common_agent.CommonAgent):
                 'Pose/hold_success_fraction': metrics['hold_success'].float().mean(),
                 'Pose/in_place_fraction': metrics['in_place'].float().mean(),
                 'Pose/object_height': metrics['object_height'].mean(),
+                'Pose/clearance_m': metrics['clearance'].mean(),
                 'epoch': self.epoch,
             })
         if 'yaw_metrics' in infos:
