@@ -43,8 +43,13 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
         self.yaw_enabled = self.yaw_config['enabled'] or self.pose_enabled
         self.extra_goal_dim = POSE_EXTRA_DIM if self.pose_enabled else (YAW_EXTRA_DIM if self.yaw_enabled else 0)
         goal_dim = 3 + self.extra_goal_dim
-        if self.pose_enabled and (cfg['env_max_humanoids'] != 4 or cfg['fix_num_humanoids'] != 4):
-            raise ValueError('These pose experiments require exactly four physical/active agents')
+        sequential_agents = self.pose_config['sequential_agents']
+        if sequential_agents is None:
+            if self.pose_enabled and (cfg['env_max_humanoids'] != 4 or cfg['fix_num_humanoids'] != 4):
+                raise ValueError('These pose experiments require exactly four physical/active agents')
+        elif (cfg['fix_num_humanoids'] != sequential_agents or cfg['system_max_humanoids'] != 8
+              or cfg['min_humanoids'] != (sequential_agents or 2)):
+            raise ValueError('Match the sequential yaw team config: fixed 4 or mixed 2–8, with capacity 8')
         if self.pose_enabled and self.yaw_config['reference_loss_coef'] != 0:
             raise ValueError('Arrival-based reference loss is not supported for flag-free pose commands')
         self.dist_threshold = float(train_cfg['params']['config'].get("dist_threshold", 10000.0))
@@ -461,7 +466,7 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
             self._target_rot[env_ids] = yaw_quaternion(target_yaw)
             self.carry_yaw[env_ids] = initial_yaw
             self.in_place_mask[env_ids] = in_place
-            if self.pose_enabled:
+            if self.pose_enabled and self.pose_config['sequential_agents'] is None:
                 xy, target, in_place = sample_pose_targets(
                     self._obj_states[env_ids, 3:7], self._obj_states[env_ids, :2],
                     self._target_end_pos[env_ids, :2], self.pose_config)
@@ -587,8 +592,9 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
         delta_xy = self._target_end_pos[env_ids][...,:2] - self._obj_states[env_ids][..., :2]
         d = delta_xy.norm(dim=-1)
 
-        if self.pose_enabled:
-            pass  # Pose holding has no arrival-dependent phase or automatic placement.
+        sequential_yaw = self.pose_enabled and self.pose_config['sequential_agents'] is not None
+        if self.pose_enabled and not sequential_yaw:
+            pass  # The original hold-only experiment does not request placement.
         elif self.yaw_enabled:
             current_yaw = quaternion_yaw(self._obj_states[env_ids, 3:7])
             if self.yaw_config['staged_transport']:
@@ -621,9 +627,13 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
 
         hand_z = hand_states[:,:,2].max(dim=-1)[0]
 
-        obs = compute_obs(root_states, obj_pos, obj_held_pts, obs_vec6, tar_pos, hand_z, self.putdown_mask[env_ids], num_humanoids = self.num_agents, expose_height=self.pose_enabled)
+        obs = compute_obs(root_states, obj_pos, obj_held_pts, obs_vec6, tar_pos, hand_z, self.putdown_mask[env_ids], num_humanoids = self.num_agents, expose_height=self.pose_enabled and not sequential_yaw)
         if self.pose_enabled:
-            extra = pose_features(self._obj_states[env_ids, 3:7], self._target_rot[env_ids],
+            pose_target = self._target_rot[env_ids]
+            if sequential_yaw:
+                pose_target = torch.where(self.arrived_mask[env_ids, None], pose_target,
+                                          yaw_quaternion(self.carry_yaw[env_ids]))
+            extra = pose_features(self._obj_states[env_ids, 3:7], pose_target,
                                   self._obj_states[env_ids, 10:13], self.pose_config['angular_speed_scale'])
             extra = extra[:, None, :].expand(-1, num_agents, -1).reshape(-1, POSE_EXTRA_DIM)
             split = sum(self.task_obs_dim[:-1]) - POSE_EXTRA_DIM
@@ -767,6 +777,10 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
         two_hands_touch_per_env = two_hands_touch.view(-1, self.num_agents)
         move_mask = two_hands_touch_per_env.sum(-1) == valid_humans.sum(-1)
 
+        sequential_yaw = self.pose_enabled and self.pose_config['sequential_agents'] is not None
+        if sequential_yaw:
+            move_mask = (two_hands_touch_per_env | ~self.mask).all(-1)
+
         if w[7] != 0:
             r_transport = compute_transport_reward(obj_center, target_pos, move_mask)
             r_transport = r_transport.unsqueeze(1).expand(-1, self.num_agents).reshape(-1)
@@ -797,19 +811,37 @@ class HumanoidAMPTableLift(humanoid_amp_task_multi.HumanoidAMPTaskMulti):
         w[7] * r_transport + w[8] * r_align + w[9] * r_putdown
 
         if self.pose_enabled:
-            error = local_orientation_error(obj_rot, self._target_rot)
-            r_rotation = pose_rotation_reward(error, clearance, move_mask, self.pose_config)
+            pose_target = self._target_rot
+            placing = self.putdown_mask if sequential_yaw else None
+            if sequential_yaw:
+                pose_target = torch.where(self.arrived_mask[:, None], pose_target,
+                                          yaw_quaternion(self.carry_yaw))
+            error = local_orientation_error(obj_rot, pose_target)
+            r_rotation = pose_rotation_reward(error, clearance, move_mask, self.pose_config, placing)
             total_reward = total_reward + r_rotation.repeat_interleave(n_agents)
-            self.settled_count, success, distance, angle = pose_hold_metrics(
-                obj_rot, self._target_rot, obj_center, target_pos, self._obj_states[:, 10:13],
-                move_mask, clearance, self.settled_count, self.pose_config)
-            self.extras['pose_metrics'] = {
-                'position_error': distance.clone(), 'orientation_error': angle.clone(),
-                'axis_error': error.clone(), 'rotation_reward': r_rotation.clone(),
-                'supported': move_mask.clone(), 'hold_success': success.clone(),
-                'in_place': self.in_place_mask.clone(),
-                'object_height': obj_center[:, 2].clone(), 'clearance': clearance.clone(),
-            }
+            if sequential_yaw:
+                distance, yaw_error, released, self.settled_count, success = placement_metrics(
+                    self._obj_states, target_pos, self._target_rot,
+                    hands_dist.view(n_envs, n_agents, 2), self.mask, self.putdown_mask,
+                    self.settled_count, self.yaw_config, rest_height=self.obj_height)
+                self.extras['yaw_metrics'] = {
+                    'position_error': distance.clone(), 'yaw_error': yaw_error.abs().clone(),
+                    'angular_speed': self._obj_states[:, 12].abs().clone(),
+                    'arrived': self.arrived_mask.clone(), 'putdown': self.putdown_mask.clone(),
+                    'released': released.clone(), 'settled_success': success.clone(),
+                    'rotation_reward': r_rotation.clone(),
+                }
+            else:
+                self.settled_count, success, distance, angle = pose_hold_metrics(
+                    obj_rot, self._target_rot, obj_center, target_pos, self._obj_states[:, 10:13],
+                    move_mask, clearance, self.settled_count, self.pose_config)
+                self.extras['pose_metrics'] = {
+                    'position_error': distance.clone(), 'orientation_error': angle.clone(),
+                    'axis_error': error.clone(), 'rotation_reward': r_rotation.clone(),
+                    'supported': move_mask.clone(), 'hold_success': success.clone(),
+                    'in_place': self.in_place_mask.clone(),
+                    'object_height': obj_center[:, 2].clone(), 'clearance': clearance.clone(),
+                }
         elif self.yaw_enabled:
             distance = (obj_center[:, :2] - target_pos[:, :2]).norm(dim=-1)
             error = wrap_angle(quaternion_yaw(self._target_rot) - quaternion_yaw(obj_rot))

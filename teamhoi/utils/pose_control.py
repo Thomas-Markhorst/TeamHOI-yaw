@@ -10,13 +10,16 @@ def pose_settings(config):
                   angle_min_deg=5., angle_max_deg=30., initial_yaw_range_deg=5.,
                   rotation_weight=1., target_clearance=.13, height_limit_margin=.15, position_tolerance=.03,
                   angle_tolerance_deg=5., speed_tolerance=.1, settled_steps=15,
-                  angular_speed_scale=1.)
+                  angular_speed_scale=1., sequential_agents=None)
     unknown = set(config) - set(values)
     if unknown:
         raise ValueError('Unknown pose_control settings: {}'.format(sorted(unknown)))
     values.update(config)
     if not isinstance(values['enabled'], bool) or values['mode'] not in ('yaw', 'pitch_roll'):
         raise ValueError('pose_control requires boolean enabled and yaw/pitch_roll mode')
+    if values['sequential_agents'] is not None:
+        if values['sequential_agents'] not in (0, 4) or not values['enabled'] or values['mode'] != 'yaw':
+            raise ValueError('Sequential yaw requires enabled yaw pose control and 0 (mixed) or 4 fixed agents')
     if not 0 <= values['walking_probability'] <= 1:
         raise ValueError('Invalid walking_probability')
     if not 0 <= values['angle_min_deg'] <= values['angle_max_deg'] <= 90 or values['angle_max_deg'] == 0:
@@ -99,12 +102,15 @@ def lifted_support(clearance, supported, config):
     return supported & (clearance >= config['target_clearance'])
 
 
-def pose_rotation_reward(error, clearance, supported, config):
+def pose_rotation_reward(error, clearance, supported, config, placing=None):
     yaw_cost = error[..., 2].abs() / math.pi
     # Each single-axis tilt retains the requested pi/2 normalization.
     tilt_cost = error[..., :2].abs().sum(-1) / (math.pi/2)
     accuracy = 1. - yaw_cost - tilt_cost
-    return torch.where(lifted_support(clearance, supported, config),
+    active = lifted_support(clearance, supported, config)
+    if placing is not None:
+        active = active | placing
+    return torch.where(active,
                        config['rotation_weight']*accuracy, torch.zeros_like(accuracy))
 
 
